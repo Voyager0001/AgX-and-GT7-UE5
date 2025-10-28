@@ -932,6 +932,7 @@ float4 TonemapCommonPS(
 
 		// RETURN_COLOR not needed unless writing to SceneColor
 		OutColor.rgb = OutDeviceColor;
+        OutColor.a = OutLuminance;
 
 		#if USE_LINEAR_FLOAT_RT
 			OutColor.rgb = sRGBToLinear( OutColor.rgb );
