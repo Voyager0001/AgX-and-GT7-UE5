@@ -14,7 +14,7 @@
 #define LOCAL_EXPOSURE_MODE_BILATERAL 1
 #define LOCAL_EXPOSURE_MODE_FUSION 2
 
-#define TONEMAPPER_MODE 1 //0 Filmic, 1 AGX
+#define TONEMAPPER_MODE 1 //0 Filmic, 1 AGX, 2 GT7
 // 0: Default, 1: Golden, 2: Punchy
 #define AGX_LOOK 0
 
@@ -310,6 +310,282 @@ half3 ApplyAgX(half3 LinearColorRec709)
 	
     return LinearColorRec709;
 }
+
+//GT START - GT7 Tonemapper (UE5 Compatible)
+//[ Driving Toward Reality: Physically Based Tone Mapping and Perceptual Fidelity in Gran Turismo 7 SIGGRAPH 2025 ]
+half3 ApplyGT(half3 Color)
+{
+	// Parameters from GT7
+    half peakL = 10.0h; // Example: 1000 nits / 100 reference = 10.0 (adjustable)
+    half alpha = 0.25h;
+    half midPoint = 0.538h;
+    half linearSection = 0.444h;
+    half toeStrength = 1.28h;
+    half ratio = 0.6h; // Blend ratio (untwisted weight)
+    half f_s = 0.98h; // Smooth step start for chroma scaling
+    half f_e = 1.16h; // Smooth step end
+	// Precompute curve constants (from initialization)
+    half k = (linearSection - 1.0h) / (alpha - 1.0h);
+    half kA = peakL * linearSection + peakL * k;
+    half kB = -peakL * k * exp(linearSection / k);
+    half kC = -1.0h / (k * peakL);
+	// Inline GT Tone Mapping V2 Curve for each channel
+    half3 twisted;
+	{
+        half x = Color.r;
+        if (x < 0.0h)
+            twisted.r = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted.r = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+            {
+                twisted.r = shoulder;
+            }
+        }
+    }
+
+	{
+        half x = Color.g;
+        if (x < 0.0h)
+            twisted.g = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted.g = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+            {
+                twisted.g = shoulder;
+            }
+        }
+    }
+
+	{
+        half x = Color.b;
+        if (x < 0.0h)
+            twisted.b = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted.b = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+            {
+                twisted.b = shoulder;
+            }
+        }
+    }
+
+	// Inline RGB to ICtCp (assuming linear Rec.2020 input; Color is linear)
+    half3 originalUCS;
+	{
+        half3 rgb = Color;
+        half l = (rgb.r * 1688.0h + rgb.g * 2146.0h + rgb.b * 262.0h) / 4096.0h;
+        half m = (rgb.r * 683.0h + rgb.g * 2951.0h + rgb.b * 462.0h) / 4096.0h;
+        half s = (rgb.r * 99.0h + rgb.g * 309.0h + rgb.b * 3688.0h) / 4096.0h;
+
+		// Inline inverseEotfSt2084 for l, m, s
+        half lPQ, mPQ, sPQ;
+		{
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half physical = l * 100.0h;
+            half y = physical / pqC;
+            half ym = pow(y, m1);
+            half logTerm1 = log2(c1 + c2 * ym);
+            half logTerm2 = log2(1.0h + c3 * ym);
+            lPQ = exp2(m2 * (logTerm1 - logTerm2));
+        }
+
+		{
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half physical = m * 100.0h;
+            half y = physical / pqC;
+            half ym = pow(y, m1);
+            half logTerm1 = log2(c1 + c2 * ym);
+            half logTerm2 = log2(1.0h + c3 * ym);
+            mPQ = exp2(m2 * (logTerm1 - logTerm2));
+        }
+
+		{
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half physical = s * 100.0h;
+            half y = physical / pqC;
+            half ym = pow(y, m1);
+            half logTerm1 = log2(c1 + c2 * ym);
+            half logTerm2 = log2(1.0h + c3 * ym);
+            sPQ = exp2(m2 * (logTerm1 - logTerm2));
+
+        }
+
+        originalUCS.x = (2048.0h * lPQ + 2048.0h * mPQ) / 4096.0h; // I
+        originalUCS.y = (6610.0h * lPQ - 13613.0h * mPQ + 7003.0h * sPQ) / 4096.0h; // Ct
+        originalUCS.z = (17933.0h * lPQ - 17390.0h * mPQ - 543.0h * sPQ) / 4096.0h; // Cp
+    }
+
+    half3 twistedUCS;
+	{
+        half3 rgb = twisted;
+        half l = (rgb.r * 1688.0h + rgb.g * 2146.0h + rgb.b * 262.0h) / 4096.0h;
+        half m = (rgb.r * 683.0h + rgb.g * 2951.0h + rgb.b * 462.0h) / 4096.0h;
+        half s = (rgb.r * 99.0h + rgb.g * 309.0h + rgb.b * 3688.0h) / 4096.0h;
+		// Inline inverseEotfSt2084 for l, m, s (repeat)
+        half lPQ, mPQ, sPQ;
+		{
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half physical = l * 100.0h;
+            half y = physical / pqC;
+            half ym = pow(y, m1);
+            half logTerm1 = log2(c1 + c2 * ym);
+            half logTerm2 = log2(1.0h + c3 * ym);
+            lPQ = exp2(m2 * (logTerm1 - logTerm2));
+        }
+
+		{
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half physical = m * 100.0h;
+            half y = physical / pqC;
+            half ym = pow(y, m1);
+            half logTerm1 = log2(c1 + c2 * ym);
+            half logTerm2 = log2(1.0h + c3 * ym);
+            mPQ = exp2(m2 * (logTerm1 - logTerm2));
+        }
+
+		{
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half physical = s * 100.0h;
+            half y = physical / pqC;
+            half ym = pow(y, m1);
+            half logTerm1 = log2(c1 + c2 * ym);
+            half logTerm2 = log2(1.0h + c3 * ym);
+            sPQ = exp2(m2 * (logTerm1 - logTerm2));
+        }
+
+        twistedUCS.x = (2048.0h * lPQ + 2048.0h * mPQ) / 4096.0h; // I
+        twistedUCS.y = (6610.0h * lPQ - 13613.0h * mPQ + 7003.0h * sPQ) / 4096.0h; // Ct
+        twistedUCS.z = (17933.0h * lPQ - 17390.0h * mPQ - 543.0h * sPQ) / 4096.0h; // Cp
+    }
+
+	// Chroma scaling (whitening)
+    half chromaScale = 1.0h - smoothstep(f_s, f_e, originalUCS.x / peakL); // Renamed to avoid conflict
+
+	// Untwisted UCS: use twisted luma, scaled chroma
+    half3 untwistedUCS = half3(twistedUCS.x, originalUCS.y * chromaScale, originalUCS.z * chromaScale);
+
+	// Inline ICtCp to RGB for untwisted
+    half3 untwisted;
+	{
+        half3 ictCp = untwistedUCS;
+        half l = ictCp.x + 0.00860904h * ictCp.y + 0.11103h * ictCp.z;
+        half m = ictCp.x - 0.00860904h * ictCp.y - 0.11103h * ictCp.z;
+        half s = ictCp.x + 0.560031h * ictCp.y - 0.320627h * ictCp.z;
+		// Inline eotfSt2084 for l, m, s
+        half lLin, mLin, sLin;
+		{
+            half n = clamp(l, 0.0h, 1.0h);
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half np = pow(n, 1.0h / m2);
+            half ll = np - c1;
+            ll = max(ll, 0.0h);
+            ll = ll / (c2 - c3 * np);
+            lLin = pow(ll, 1.0h / m1) * pqC / 100.0h;
+        }
+
+		{
+            half n = clamp(m, 0.0h, 1.0h);
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half np = pow(n, 1.0h / m2);
+            half ll = np - c1;
+            ll = max(ll, 0.0h);
+            ll = ll / (c2 - c3 * np);
+            mLin = pow(ll, 1.0h / m1) * pqC / 100.0h;
+        }
+
+		{
+            half n = clamp(s, 0.0h, 1.0h);
+            const half m1 = 0.1593017578125h;
+            const half m2 = 78.84375h * 1.0h;
+            const half c1 = 0.8359375h;
+            const half c2 = 18.8515625h;
+            const half c3 = 18.6875h;
+            const half pqC = 10000.0h;
+            half np = pow(n, 1.0h / m2);
+            half ll = np - c1;
+            ll = max(ll, 0.0h);
+            ll = ll / (c2 - c3 * np);
+            sLin = pow(ll, 1.0h / m1) * pqC / 100.0h;
+        }
+        untwisted.r = max(3.43661h * lLin - 2.50645h * mLin + 0.0698454h * sLin, 0.0h);
+        untwisted.g = max(-0.79133h * lLin + 1.9836h * mLin - 0.192271h * sLin, 0.0h);
+        untwisted.b = max(-0.0259499h * lLin - 0.0989137h * mLin + 1.12486h * sLin, 0.0h);
+    }
+
+	// Final blend
+    half3 finalColor = lerp(twisted, untwisted, ratio);
+	// For SDR: finalColor *= 1.0h / (250.0h / 100.0h); // 1/2.5
+	//finalColor *= 0.2h; // Example adjustment if needed
+    return finalColor;
+}
+//GT END
+
+
 
 // can be optimized
 float2 ScreenPosToUV(float2 ScreenPos, float2 ExtentInverse)
@@ -645,6 +921,8 @@ float4 TonemapCommonPS(
         half3 OutDeviceColor = ColorLookupTable(FinalLinearColor);
 #elif TONEMAPPER_MODE == 1
         half3 OutDeviceColor = ApplyAgX(FinalLinearColor); //*.85
+#elif TONEMAPPER_MODE == 2
+        half3 OutDeviceColor = ApplyGT(FinalLinearColor); // .4 *
 #else
 		half3 OutDeviceColor =LinearTosRGB(FinalLinearColor);
 #endif
