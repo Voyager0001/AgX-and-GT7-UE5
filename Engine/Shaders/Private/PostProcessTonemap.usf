@@ -14,7 +14,8 @@
 #define LOCAL_EXPOSURE_MODE_BILATERAL 1
 #define LOCAL_EXPOSURE_MODE_FUSION 2
 
-#define TONEMAPPER_MODE 1 //0 Filmic, 1 AGX, 2 GT7
+
+#define TONEMAPPER_MODE 3 //0 Filmic, 1 AGX, 2 GT IctCp, 3 GT JzAzBz
 // 0: Default, 1: Golden, 2: Punchy
 #define AGX_LOOK 0
 
@@ -213,6 +214,10 @@ half3 ColorLookupTable( half3 LinearColor )
 	return OutDeviceColor * 1.05;
 }
 
+// AGX Begin
+
+
+// Mean error^2: 3.6705141e-06
 float3 AgxDefaultContrastApprox(float3 x)
 {
     const float3 x2 = x * x;
@@ -310,6 +315,10 @@ half3 ApplyAgX(half3 LinearColorRec709)
 	
     return LinearColorRec709;
 }
+// AGX END
+
+//GT START - GT7 Tonemapper (UE5 Compatible)
+//[ Driving Toward Reality: Physically Based Tone Mapping and Perceptual Fidelity in Gran Turismo 7 SIGGRAPH 2025 ]
 
 static const float3x3 Rec709ToRec2020 = float3x3(
 				0.627402, 0.329292, 0.043306,
@@ -325,10 +334,11 @@ static const float3x3 Rec2020ToRec709 = float3x3(
 
 //GT START - GT7 Tonemapper (UE5 Compatible)
 //[ Driving Toward Reality: Physically Based Tone Mapping and Perceptual Fidelity in Gran Turismo 7 SIGGRAPH 2025 ]
-half3 ApplyGT(half3 Color)
+half3 ApplyGT(half3 Color) // IctCp based GT Tonemapper
 {
 	
     Color = mul(Color, Rec709ToRec2020);
+	
 	// Parameters from GT7
     half peakL = 10.0h; // Example: 1000 nits / 100 reference = 10.0 (adjustable)
     half alpha = 0.25h;
@@ -594,13 +604,284 @@ half3 ApplyGT(half3 Color)
 	// Final blend
     half3 finalColor = lerp(twisted, untwisted, ratio);
 	// For SDR: finalColor *= 1.0h / (250.0h / 100.0h); // 1/2.5
-	//finalColor *= 0.2h; // Example adjustment if needed
+	//finalColor *= 2.0h; // Example adjustment if needed
     finalColor = mul(finalColor, Rec2020ToRec709);
-    finalColor = LinearToSrgb(finalColor);
+    finalColor = LinearToSrgb(finalColor); //pow(finalColor, 1 / 2.2); //;
+	
     return finalColor;
 }
-//GT END
 
+
+
+half3 ApplyGT2(half3 Color) // replaces the ICtCp pipeline with a Safdar2017 JzAzBz pipeline
+{
+    Color = mul(Color, Rec709ToRec2020);
+	
+    // Parameters from GT7
+    half peakL = 10.0h;
+    half alpha = 0.25h;
+    half midPoint = 0.538h;
+    half linearSection = 0.444h;
+    half toeStrength = 1.28h;
+    half ratio = 0.6h;
+    half f_s = 0.98h;
+    half f_e = 1.16h;
+	
+    // Precompute curve constants
+    half k = (linearSection - 1.0h) / (alpha - 1.0h);
+    half kA = peakL * linearSection + peakL * k;
+    half kB = -peakL * k * exp(linearSection / k);
+    half kC = -1.0h / (k * peakL);
+	
+    // Apply GT Tone Mapping per channel
+    half3 twisted;
+    {
+        half x = Color.r;
+        if (x < 0.0h)
+            twisted.r = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted.r = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+            {
+                twisted.r = shoulder;
+            }
+        }
+    }
+
+    {
+        half x = Color.g;
+        if (x < 0.0h)
+            twisted.g = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted.g = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+            {
+                twisted.g = shoulder;
+            }
+        }
+    }
+
+    {
+        half x = Color.b;
+        if (x < 0.0h)
+            twisted.b = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted.b = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+            {
+                twisted.b = shoulder;
+            }
+        }
+    }
+
+    // JzAzBz Constants (Safdar 2017)
+    const half JZ_b = 1.15h;
+    const half JZ_g = 0.66h;
+    const half JZ_d = -0.56h;
+    const half JZ_d0 = 1.6295499532821566e-11h;
+    
+    const half PQ_m1 = 0.1593017578125h;
+    const half PQ_m2 = 134.03437500000000h;
+    const half PQ_c1 = 0.8359375h;
+    const half PQ_c2 = 18.8515625h;
+    const half PQ_c3 = 18.6875h;
+    const half PQ_C = 10000.0h;
+
+    // Rec.2020 to XYZ (D65) matrix
+    const half3 REC2020_TO_XYZ_R0 = half3(0.636953507h, 0.144619185h, 0.168855854h);
+    const half3 REC2020_TO_XYZ_R1 = half3(0.262698339h, 0.678008776h, 0.0592928953h);
+    const half3 REC2020_TO_XYZ_R2 = half3(4.99407097e-17h, 0.028073130h, 1.06082723h);
+
+    // XYZ to LMS matrix
+    const half3 XYZ_TO_LMS_R0 = half3(0.41478972h, 0.57999900h, 0.01464800h);
+    const half3 XYZ_TO_LMS_R1 = half3(-0.20151000h, 1.12064900h, 0.05310080h);
+    const half3 XYZ_TO_LMS_R2 = half3(-0.01660080h, 0.26480000h, 0.66847990h);
+
+    // LMS' to IzAzBz matrix
+    const half3 LMS_P_TO_IZAZBZ_R0 = half3(0.500000h, 0.500000h, 0.000000h);
+    const half3 LMS_P_TO_IZAZBZ_R1 = half3(3.524000h, -4.066708h, 0.542708h);
+    const half3 LMS_P_TO_IZAZBZ_R2 = half3(0.199076h, 1.096799h, -1.295875h);
+
+    // IzAzBz to LMS' matrix (inverse)
+    const half3 IZAZBZ_TO_LMS_P_R0 = half3(1.00000000h, 0.13860504h, 0.05804732h);
+    const half3 IZAZBZ_TO_LMS_P_R1 = half3(1.00000000h, -0.13860504h, -0.05804732h);
+    const half3 IZAZBZ_TO_LMS_P_R2 = half3(1.00000000h, -0.09601924h, -0.81189190h);
+
+    // LMS to XYZ matrix (inverse)
+    const half3 LMS_TO_XYZ_R0 = half3(1.92422644h, -1.00479231h, 0.03765140h);
+    const half3 LMS_TO_XYZ_R1 = half3(0.35031676h, 0.72648119h, -0.06538442h);
+    const half3 LMS_TO_XYZ_R2 = half3(-0.09098281h, -0.31272829h, 1.52276656h);
+
+    // XYZ to Rec.2020 matrix (inverse)
+    const half3 XYZ_TO_REC2020_R0 = half3(1.71666343h, -0.35567332h, -0.25336809h);
+    const half3 XYZ_TO_REC2020_R1 = half3(-0.66667384h, 1.61645574h, 0.01576830h);
+    const half3 XYZ_TO_REC2020_R2 = half3(0.01764248h, -0.04277698h, 0.94224328h);
+
+    // === Forward: RGB to JzAzBz (original color) ===
+    half3 originalJz;
+    {
+        half3 rgb = Color;
+        
+        // 1. RGB to XYZ
+        half X = dot(rgb, REC2020_TO_XYZ_R0);
+        half Y = dot(rgb, REC2020_TO_XYZ_R1);
+        half Z = dot(rgb, REC2020_TO_XYZ_R2);
+        
+        // 2. Apply Xp, Yp adjustment
+        half Xp = JZ_b * X - (JZ_b - 1.0h) * Z;
+        half Yp = JZ_g * Y - (JZ_g - 1.0h) * X;
+        
+        // 3. XYZ' to LMS
+        half3 XYZp = half3(Xp, Yp, Z);
+        half l = dot(XYZp, XYZ_TO_LMS_R0);
+        half m = dot(XYZp, XYZ_TO_LMS_R1);
+        half s = dot(XYZp, XYZ_TO_LMS_R2);
+        
+        // 4. LMS to LMS' (inverse ST2084)
+        half3 LMS = half3(l, m, s);
+        half3 physical = LMS * 100.0h;
+        half3 y = physical / PQ_C;
+        half3 ym = pow(max(y, 1e-12h), PQ_m1);
+        half3 logTerm1 = log2(PQ_c1 + PQ_c2 * ym);
+        half3 logTerm2 = log2(1.0h + PQ_c3 * ym);
+        half3 LMS_p = exp2(PQ_m2 * (logTerm1 - logTerm2));
+        
+        // 5. LMS' to IzAzBz
+        half Iz = dot(LMS_p, LMS_P_TO_IZAZBZ_R0);
+        half az = dot(LMS_p, LMS_P_TO_IZAZBZ_R1);
+        half bz = dot(LMS_p, LMS_P_TO_IZAZBZ_R2);
+        
+        // 6. Iz to Jz
+        half Jz = ((1.0h + JZ_d) * Iz) / (1.0h + JZ_d * Iz) - JZ_d0;
+        
+        originalJz = half3(Jz, az, bz);
+    }
+
+    // === Forward: RGB to JzAzBz (twisted color) ===
+    half3 twistedJz;
+    {
+        half3 rgb = twisted;
+        
+        // 1. RGB to XYZ
+        half X = dot(rgb, REC2020_TO_XYZ_R0);
+        half Y = dot(rgb, REC2020_TO_XYZ_R1);
+        half Z = dot(rgb, REC2020_TO_XYZ_R2);
+        
+        // 2. Apply Xp, Yp adjustment
+        half Xp = JZ_b * X - (JZ_b - 1.0h) * Z;
+        half Yp = JZ_g * Y - (JZ_g - 1.0h) * X;
+        
+        // 3. XYZ' to LMS
+        half3 XYZp = half3(Xp, Yp, Z);
+        half l = dot(XYZp, XYZ_TO_LMS_R0);
+        half m = dot(XYZp, XYZ_TO_LMS_R1);
+        half s = dot(XYZp, XYZ_TO_LMS_R2);
+        
+        // 4. LMS to LMS' (inverse ST2084)
+        half3 LMS = half3(l, m, s);
+        half3 physical = LMS * 100.0h;
+        half3 y = physical / PQ_C;
+        half3 ym = pow(max(y, 1e-12h), PQ_m1);
+        half3 logTerm1 = log2(PQ_c1 + PQ_c2 * ym);
+        half3 logTerm2 = log2(1.0h + PQ_c3 * ym);
+        half3 LMS_p = exp2(PQ_m2 * (logTerm1 - logTerm2));
+        
+        // 5. LMS' to IzAzBz
+        half Iz = dot(LMS_p, LMS_P_TO_IZAZBZ_R0);
+        half az = dot(LMS_p, LMS_P_TO_IZAZBZ_R1);
+        half bz = dot(LMS_p, LMS_P_TO_IZAZBZ_R2);
+        
+        // 6. Iz to Jz
+        half Jz = ((1.0h + JZ_d) * Iz) / (1.0h + JZ_d * Iz) - JZ_d0;
+        
+        twistedJz = half3(Jz, az, bz);
+    }
+
+    // Chroma scaling based on original Jz lightness
+    half chromaScale = 1.0h - smoothstep(f_s, f_e, originalJz.x / peakL);
+
+    // Create untwisted: twisted lightness with scaled original chroma
+    half3 untwistedJzAzBz = half3(twistedJz.x, originalJz.y * chromaScale, originalJz.z * chromaScale);
+
+    // === Inverse: JzAzBz to RGB (untwisted) ===
+    half3 untwistedRGB;
+    {
+        half3 JzAzBz_in = untwistedJzAzBz;
+        
+        // 1. Jz to Iz
+        half Jz = JzAzBz_in.x;
+        half az = JzAzBz_in.y;
+        half bz = JzAzBz_in.z;
+        half Iz = (Jz + JZ_d0) / (1.0h + JZ_d - JZ_d * (Jz + JZ_d0));
+        
+        // 2. IzAzBz to LMS'
+        half3 IzAzBz = half3(Iz, az, bz);
+        half lp = dot(IzAzBz, IZAZBZ_TO_LMS_P_R0);
+        half mp = dot(IzAzBz, IZAZBZ_TO_LMS_P_R1);
+        half sp = dot(IzAzBz, IZAZBZ_TO_LMS_P_R2);
+        
+        // 3. LMS' to LMS (forward ST2084)
+        half3 LMS_p = half3(lp, mp, sp);
+        half3 n = clamp(LMS_p, 0.0h, 1.0h);
+        half3 npv = pow(n, 1.0h / PQ_m2);
+        half3 ll = max(npv - PQ_c1, 0.0h);
+        ll = ll / (PQ_c2 - PQ_c3 * npv);
+        half3 LMS = pow(ll, 1.0h / PQ_m1) * PQ_C / 100.0h;
+        
+        // 4. LMS to XYZ'
+        half Xp = dot(LMS, LMS_TO_XYZ_R0);
+        half Yp = dot(LMS, LMS_TO_XYZ_R1);
+        half Zp = dot(LMS, LMS_TO_XYZ_R2);
+        
+        // 5. XYZ' to XYZ (inverse adjustment)
+        half X = (Xp + (JZ_b - 1.0h) * Zp) / JZ_b;
+        half Y = (Yp + (JZ_g - 1.0h) * X) / JZ_g;
+        half Z = Zp;
+        
+        // 6. XYZ to RGB
+        half3 XYZ = half3(X, Y, Z);
+        half r = dot(XYZ, XYZ_TO_REC2020_R0);
+        half g = dot(XYZ, XYZ_TO_REC2020_R1);
+        half b = dot(XYZ, XYZ_TO_REC2020_R2);
+        
+        untwistedRGB = half3(r, g, b);
+    }
+
+    // Final blend
+    half3 finalColor = lerp(twisted, untwistedRGB, ratio);
+    
+    finalColor = mul(finalColor, Rec2020ToRec709);
+    finalColor = LinearToSrgb(finalColor);
+	
+    return finalColor;
+}
+
+
+//GT END
 
 
 // can be optimized
@@ -690,6 +971,8 @@ half3 LookupSceneColor(float2 SceneUV, float ArrayIndex, float2 PixelOffset)
 	float2 SampleUV = SceneUV + PixelOffset * Color_ExtentInverse;
 	return SampleSceneColor(SampleUV, ArrayIndex).xyz;
 }
+
+
 
 float4 TonemapCommonPS(
 	float3 UV,
@@ -918,7 +1201,7 @@ float4 TonemapCommonPS(
 		FinalLinearColor += Bloom * (OneOverPreExposure * GlobalExposure * VignetteMask);
 		
 		// Film grain is energy conservative so doesn't need to be taken into PreExposure
-		#if USE_FILM_GRAIN
+#if USE_FILM_GRAIN
 		{
 			float3 FilmGrainDecodeMultiply = FilmGrainTextureConstants[0].rgb;
 
@@ -931,14 +1214,17 @@ float4 TonemapCommonPS(
 
 			FinalLinearColor.rgb *= lerp(1.0, FinalGrain, FilmGrainIntensity);
 		}
-		#endif
+#endif
 		
+
 #if TONEMAPPER_MODE == 0		
         half3 OutDeviceColor = ColorLookupTable(FinalLinearColor);
 #elif TONEMAPPER_MODE == 1
         half3 OutDeviceColor = ApplyAgX(FinalLinearColor); //*.85
 #elif TONEMAPPER_MODE == 2
         half3 OutDeviceColor = ApplyGT(FinalLinearColor); // .4 *
+#elif TONEMAPPER_MODE == 3
+        half3 OutDeviceColor = ApplyGT2(FinalLinearColor); // .4 *
 #else
 		half3 OutDeviceColor =LinearTosRGB(FinalLinearColor);
 #endif
