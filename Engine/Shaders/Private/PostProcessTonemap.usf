@@ -596,6 +596,7 @@ half3 ApplyGT(half3 Color)
 	// For SDR: finalColor *= 1.0h / (250.0h / 100.0h); // 1/2.5
 	//finalColor *= 0.2h; // Example adjustment if needed
     finalColor = mul(finalColor, Rec2020ToRec709);
+    finalColor = LinearToSrgb(finalColor);
     return finalColor;
 }
 //GT END
