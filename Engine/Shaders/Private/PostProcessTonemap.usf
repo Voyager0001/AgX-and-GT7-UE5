@@ -311,10 +311,24 @@ half3 ApplyAgX(half3 LinearColorRec709)
     return LinearColorRec709;
 }
 
+static const float3x3 Rec709ToRec2020 = float3x3(
+				0.627402, 0.329292, 0.043306,
+				0.069095, 0.919544, 0.011360,
+				0.016394, 0.088028, 0.895578
+			);
+
+static const float3x3 Rec2020ToRec709 = float3x3(
+				1.660496, -0.587656, -0.072840,
+				-0.124547, 1.132895, -0.008348,
+				-0.018151, -0.100597, 1.118748
+			);
+
 //GT START - GT7 Tonemapper (UE5 Compatible)
 //[ Driving Toward Reality: Physically Based Tone Mapping and Perceptual Fidelity in Gran Turismo 7 SIGGRAPH 2025 ]
 half3 ApplyGT(half3 Color)
 {
+	
+    Color = mul(Color, Rec709ToRec2020);
 	// Parameters from GT7
     half peakL = 10.0h; // Example: 1000 nits / 100 reference = 10.0 (adjustable)
     half alpha = 0.25h;
@@ -581,6 +595,7 @@ half3 ApplyGT(half3 Color)
     half3 finalColor = lerp(twisted, untwisted, ratio);
 	// For SDR: finalColor *= 1.0h / (250.0h / 100.0h); // 1/2.5
 	//finalColor *= 0.2h; // Example adjustment if needed
+    finalColor = mul(finalColor, Rec2020ToRec709);
     return finalColor;
 }
 //GT END
