@@ -1148,6 +1148,122 @@ half3 ApplyGT3(half3 Color)
     return finalColor;
 }
 
+// === Oklab Utilities (for Rec.709/sRGB linear input) ===
+inline half cbrt_safe(half v)
+{
+    return pow(max(v, 0.0h), 1.0h / 3.0h);
+}
+
+inline half3 Linear_to_Oklab(half3 rgb)
+{
+    // M1: linear sRGB -> LMS
+    const half3x3 M1 =
+    {
+        0.4122214708h, 0.5363325363h, 0.0514459929h,
+        0.2119034982h, 0.6806995451h, 0.1073969566h,
+        0.0883024619h, 0.2817188376h, 0.6299787005h
+    };
+    half3 lms = mul(M1, rgb);
+    lms = cbrt_safe(lms);
+
+    // M2: LMS' -> Oklab
+    const half3x3 M2 =
+    {
+        0.2104542553h, 0.7936177850h, -0.0040720468h,
+        1.9779984951h, -2.4285922050h, 0.4505937099h,
+        0.0259040371h, 0.7827717662h, -0.8086758030h
+    };
+    return mul(M2, lms);
+}
+
+inline half3 Oklab_to_Linear(half3 lab)
+{
+    // Inverse M2: Oklab -> LMS'
+    half3 lms_;
+    lms_.x = lab.x + 0.3963377774h * lab.y + 0.2158037573h * lab.z;
+    lms_.y = lab.x - 0.1055613458h * lab.y - 0.0638541728h * lab.z;
+    lms_.z = lab.x - 0.0894841775h * lab.y - 1.2914855480h * lab.z;
+
+    half3 lms = lms_ * lms_ * lms_; // cube back
+
+    // Inverse M1: LMS -> linear sRGB
+    const half3x3 invM1 =
+    {
+        4.0767416621h, -3.3077115913h, 0.2309699292h,
+        -1.2684380046h, 2.6097574011h, -0.3413193965h,
+        -0.0041960863h, -0.7034186147h, 1.7076147010h
+    };
+    return max(mul(invM1, lms), 0.0h);
+}
+
+// === GT Tone Map + Oklab UCS for SDR ===
+half3 ApplyGT_Oklab_SDR(half3 Color)
+{
+    // Input: linear sRGB (Rec.709)
+    // No Rec.2020 conversion needed
+
+    // GT7 curve parameters
+    half peakL = 1.0h; // SDR normalized
+    half alpha = 0.25h;
+    half midPoint = 0.538h;
+    half linearSection = 0.444h;
+    half toeStrength = 1.28h;
+    half ratio = 0.0h;
+    half f_s = 0.92h; // Chroma fade start (tuned for SDR)
+    half f_e = 1.02h; // Chroma fade end
+    //half chromaBoost = 2.0h;
+
+    half k = (linearSection - 1.0h) / (alpha - 1.0h);
+    half kA = peakL * linearSection + peakL * k;
+    half kB = -peakL * k * exp(linearSection / k);
+    half kC = -1.0h / (k * peakL);
+
+    // Per-channel GT tone curve
+    half3 twisted;
+    [unroll]
+    for (int i = 0; i < 3; ++i)
+    {
+        half x = Color[i];
+        if (x < 0.0h)
+            twisted[i] = 0.0h;
+        else
+        {
+            half weightLinear = smoothstep(0.0h, midPoint, x);
+            half weightToe = 1.0h - weightLinear;
+            half shoulder = kA + kB * exp(x * kC);
+            if (x < linearSection * peakL)
+            {
+                half toeMapped = midPoint * pow(x / midPoint, toeStrength);
+                twisted[i] = weightToe * toeMapped + weightLinear * x;
+            }
+            else
+                twisted[i] = shoulder;
+        }
+    }
+
+    // Convert to Oklab for chroma processing
+    half3 origLab = Linear_to_Oklab(Color);
+    half3 twistLab = Linear_to_Oklab(twisted);
+
+    // Chroma scale (whitening)
+    half chromaScale = 1.0h - smoothstep(f_s, f_e, origLab.x / peakL);
+
+    // Untwist: keep twisted luminance, scale original chroma
+    half3 untwistLab = half3(twistLab.x, origLab.y * chromaScale, origLab.z * chromaScale);
+
+    //untwistLab.yz *= chromaBoost;
+    
+    // Back to linear sRGB
+    half3 untwisted = Oklab_to_Linear(untwistLab);
+
+    // Blend twisted vs untwisted
+    half3 finalColor = lerp(twisted, untwisted, ratio);
+
+    // Apply gamma to sRGB
+    finalColor = LinearToSrgb(finalColor);
+
+    return saturate(finalColor);
+}
 //GT END
 
 
@@ -1494,8 +1610,10 @@ float4 TonemapCommonPS(
         half3 OutDeviceColor = ApplyGT2(FinalLinearColor); // .4 *
 #elif TONEMAPPER_MODE == 4
         half3 OutDeviceColor = ApplyGT3(FinalLinearColor);
+#elif TONEMAPPER_MODE == 5
+        half3 OutDeviceColor = ApplyGT_Oklab_SDR(FinalLinearColor);   
 #else
-		half3 OutDeviceColor =LinearTosRGB(FinalLinearColor);
+        half3 OutDeviceColor = LinearToSrgb(FinalLinearColor);
 #endif
 
 		half LuminanceForPostProcessAA = dot(OutDeviceColor, half3(0.299f, 0.587f, 0.114f));
