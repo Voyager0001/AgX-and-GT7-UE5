@@ -15,7 +15,7 @@
 #define LOCAL_EXPOSURE_MODE_FUSION 2
 
 
-#define TONEMAPPER_MODE 3 //0 Filmic, 1 AGX, 2 GT IctCp, 3 GT JzAzBz
+#define TONEMAPPER_MODE 2 //0 Filmic, 1 AGX, 2 GT IctCp, 3 GT JzAzBz, 4 GT JzAzBz 2021, 5 GT OKLAB, 6 No Tonemapper
 // 0: Default, 1: Golden, 2: Punchy
 #define AGX_LOOK 0
 
