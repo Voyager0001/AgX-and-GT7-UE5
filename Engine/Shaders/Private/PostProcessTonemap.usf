@@ -15,7 +15,7 @@
 #define LOCAL_EXPOSURE_MODE_FUSION 2
 
 
-#define TONEMAPPER_MODE 2 //0 Filmic, 1 AGX, 2 GT IctCp, 3 GT JzAzBz, 4 GT JzAzBz 2021, 5 GT OKLAB, 6 No Tonemapper
+#define TONEMAPPER_MODE 5 //0 Filmic, 1 AGX, 2 GT IctCp, 3 GT JzAzBz, 4 GT JzAzBz 2021, 5 GT OKLAB, 6 No Tonemapper
 // 0: Default, 1: Golden, 2: Punchy
 #define AGX_LOOK 0
 
@@ -118,8 +118,8 @@ uint GetOutputDevice()
 
 half GrainFromUV(float2 GrainUV) 
 {
-	half Grain = frac(sin(GrainUV.x + GrainUV.y * 543.31) *  493013.0);
-	return Grain;
+    half Grain = frac(sin(GrainUV.x + GrainUV.y * 543.31) * 493013.0);
+    return Grain;
 }
 
 // converts from screen [-1,1] space to the lens [-1,1] viewport space
@@ -164,12 +164,12 @@ float ComputeFilmGrainIntensity(float3 LinearColorRGBGamut)
 	float CCWeightMidtones = 1 - CCWeightShadows - CCWeightHighlights;
 	
 	// Blend Shadow, Midtone and Highlight CCs
-	float FilmGrainIntensity = (
+    float FilmGrainIntensity = (
 		FilmGrainIntensityShadows * CCWeightShadows +
 		FilmGrainIntensityMidtones * CCWeightMidtones +
 		FilmGrainIntensityHighlights * CCWeightHighlights);
 	
-	return FilmGrainIntensity;
+    return FilmGrainIntensity;
 }
 
 
@@ -338,7 +338,7 @@ half3 ApplyGT(half3 Color) // IctCp based GT Tonemapper
     Color = mul(Color, Rec709ToRec2020);
 	
 	// Parameters from GT7
-    half peakL = 10.0h; // Example: 1000 nits / 100 reference = 10.0 (adjustable)
+    half peakL = 2.5h; // Example: 1000 nits / 100 reference = 10.0 (adjustable)
     half alpha = 0.25h;
     half midPoint = 0.538h;
     half linearSection = 0.444h;
@@ -602,7 +602,8 @@ half3 ApplyGT(half3 Color) // IctCp based GT Tonemapper
 	// Final blend
     half3 finalColor = lerp(twisted, untwisted, ratio);
 	// For SDR: finalColor *= 1.0h / (250.0h / 100.0h); // 1/2.5
-	//finalColor *= 2.0h; // Example adjustment if needed
+    half sdrCorrectionFactor = 1.0h / peakL;
+    finalColor *= sdrCorrectionFactor;
     finalColor = mul(finalColor, Rec2020ToRec709);
     finalColor = LinearToSrgb(finalColor); //pow(finalColor, 1 / 2.2); //;
 	
@@ -616,7 +617,7 @@ half3 ApplyGT2(half3 Color) // replaces the ICtCp pipeline with a Safdar2017 JzA
     Color = mul(Color, Rec709ToRec2020);
 	
     // Parameters from GT7
-    half peakL = 10.0h;
+    half peakL = 2.5h;
     half alpha = 0.25h;
     half midPoint = 0.538h;
     half linearSection = 0.444h;
@@ -871,8 +872,10 @@ half3 ApplyGT2(half3 Color) // replaces the ICtCp pipeline with a Safdar2017 JzA
 
     // Final blend
     half3 finalColor = lerp(twisted, untwistedRGB, ratio);
-    
+    half sdrCorrectionFactor = 1.0h / peakL;
+    finalColor *= sdrCorrectionFactor;
     finalColor = mul(finalColor, Rec2020ToRec709);
+    
     finalColor = LinearToSrgb(finalColor);
 	
     return finalColor;
@@ -883,7 +886,7 @@ half3 ApplyGT3(half3 Color)
     Color = mul(Color, Rec709ToRec2020);
 	
     // Parameters from GT7
-    half peakL = 10.0h;
+    half peakL = 2.5h;
     half alpha = 0.25h;
     half midPoint = 0.538h;
     half linearSection = 0.444h;
@@ -1142,6 +1145,8 @@ half3 ApplyGT3(half3 Color)
     // Final blend
     half3 finalColor = lerp(twisted, untwistedRGB, ratio);
     
+    half sdrCorrectionFactor = 1.0h / peakL;
+    finalColor *= sdrCorrectionFactor;
     finalColor = mul(finalColor, Rec2020ToRec709);
     finalColor = LinearToSrgb(finalColor);
 	
@@ -1154,71 +1159,71 @@ inline half cbrt_safe(half v)
     return pow(max(v, 0.0h), 1.0h / 3.0h);
 }
 
-inline half3 Linear_to_Oklab(half3 rgb)
-{
-    // M1: linear sRGB -> LMS
-    const half3x3 M1 =
-    {
-        0.4122214708h, 0.5363325363h, 0.0514459929h,
-        0.2119034982h, 0.6806995451h, 0.1073969566h,
-        0.0883024619h, 0.2817188376h, 0.6299787005h
-    };
-    half3 lms = mul(M1, rgb);
-    lms = cbrt_safe(lms);
-
-    // M2: LMS' -> Oklab
-    const half3x3 M2 =
-    {
-        0.2104542553h, 0.7936177850h, -0.0040720468h,
-        1.9779984951h, -2.4285922050h, 0.4505937099h,
-        0.0259040371h, 0.7827717662h, -0.8086758030h
-    };
-    return mul(M2, lms);
-}
-
-inline half3 Oklab_to_Linear(half3 lab)
-{
-    // Inverse M2: Oklab -> LMS'
-    half3 lms_;
-    lms_.x = lab.x + 0.3963377774h * lab.y + 0.2158037573h * lab.z;
-    lms_.y = lab.x - 0.1055613458h * lab.y - 0.0638541728h * lab.z;
-    lms_.z = lab.x - 0.0894841775h * lab.y - 1.2914855480h * lab.z;
-
-    half3 lms = lms_ * lms_ * lms_; // cube back
-
-    // Inverse M1: LMS -> linear sRGB
-    const half3x3 invM1 =
-    {
-        4.0767416621h, -3.3077115913h, 0.2309699292h,
-        -1.2684380046h, 2.6097574011h, -0.3413193965h,
-        -0.0041960863h, -0.7034186147h, 1.7076147010h
-    };
-    return max(mul(invM1, lms), 0.0h);
-}
 
 // === GT Tone Map + Oklab UCS for SDR ===
+half3 LinearToOklab(half3 c)
+{
+    half l = 0.4122214708f * c.r + 0.5363325363f * c.g + 0.0514459929f * c.b;
+    half m = 0.2119034982f * c.r + 0.6806995451f * c.g + 0.1073969566f * c.b;
+    half s = 0.0883024619f * c.r + 0.2817188376f * c.g + 0.6299787005f * c.b;
+
+    half l_ = pow(l, 1.0 / 3.0);
+    half m_ = pow(m, 1.0 / 3.0);
+    half s_ = pow(s, 1.0 / 3.0);
+
+    return half3(
+        0.2104542553f * l_ + 0.7936177850f * m_ - 0.0040720468f * s_,
+        1.9779984951f * l_ - 2.4285922050f * m_ + 0.4505937099f * s_,
+        0.0259040371f * l_ + 0.7827717662f * m_ - 0.8086757660f * s_
+    );
+}
+
+half3 OklabToLinear(half3 c)
+{
+    half l_ = c.x + 0.3963377774f * c.y + 0.2158037573f * c.z;
+    half m_ = c.x - 0.1055613458f * c.y - 0.0638541728f * c.z;
+    half s_ = c.x - 0.0894841775f * c.y - 1.2914855480f * c.z;
+
+    half l = l_ * l_ * l_;
+    half m = m_ * m_ * m_;
+    half s = s_ * s_ * s_;
+
+    return half3(
+        4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s,
+        -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s,
+        -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s
+    );
+}
+
+// --- MAIN TONEMAPPER ---
+
 half3 ApplyGT_Oklab_SDR(half3 Color)
 {
-    // Input: linear sRGB (Rec.709)
-    // No Rec.2020 conversion needed
+    // Input is Linear Rec.709 (sRGB primaries)
 
-    // GT7 curve parameters
-    half peakL = 1.0h; // SDR normalized
-    half alpha = 0.25h;
-    half midPoint = 0.538h;
-    half linearSection = 0.444h;
-    half toeStrength = 1.28h;
-    half ratio = 0.0h;
-    half f_s = 0.92h; // Chroma fade start (tuned for SDR)
-    half f_e = 1.02h; // Chroma fade end
-    //half chromaBoost = 2.0h;
+    // GT7 Parameters
+    const half peakL = 2.5h;
+    const half alpha = 0.25h;
+    const half midPoint = 0.538h;
+    const half linearSection = 0.444h;
+    const half toeStrength = 1.28h;
+    
+    // FIX 1: Set a blend ratio. 
+    // 0.0 = Per-Channel look (Hue shifts). 
+    // 1.0 = Oklab look (Hue preserve).
+    // 0.6 is a good sweet spot for games.
+    const half ratio = 0.6h;
+    
+    const half f_s = 0.92h;
+    const half f_e = 1.02h;
 
-    half k = (linearSection - 1.0h) / (alpha - 1.0h);
-    half kA = peakL * linearSection + peakL * k;
-    half kB = -peakL * k * exp(linearSection / k);
-    half kC = -1.0h / (k * peakL);
+    // Precompute Curve
+    const half k = (linearSection - 1.0h) / (alpha - 1.0h);
+    const half kA = peakL * linearSection + peakL * k;
+    const half kB = -peakL * k * exp(linearSection / k);
+    const half kC = -1.0h / (k * peakL);
 
-    // Per-channel GT tone curve
+    // 1. Calculate Per-Channel Mapped RGB (Twisted)
     half3 twisted;
     [unroll]
     for (int i = 0; i < 3; ++i)
@@ -1237,32 +1242,40 @@ half3 ApplyGT_Oklab_SDR(half3 Color)
                 twisted[i] = weightToe * toeMapped + weightLinear * x;
             }
             else
+            {
                 twisted[i] = shoulder;
+            }
         }
     }
 
-    // Convert to Oklab for chroma processing
-    half3 origLab = Linear_to_Oklab(Color);
-    half3 twistLab = Linear_to_Oklab(twisted);
+    // 2. Oklab Untwist Process
+    half3 origLab = LinearToOklab(Color);
+    half3 twistLab = LinearToOklab(twisted);
 
-    // Chroma scale (whitening)
+    // Chroma Compression (Whitening at peak)
+    // Using original luminance to determine how close we are to "paper white"
     half chromaScale = 1.0h - smoothstep(f_s, f_e, origLab.x / peakL);
 
-    // Untwist: keep twisted luminance, scale original chroma
+    // Reconstruct:
+    // L = From the Tone Curve (respects the brightness compression)
+    // a, b = From the Original Image (respects the hue/saturation), scaled down near white
     half3 untwistLab = half3(twistLab.x, origLab.y * chromaScale, origLab.z * chromaScale);
 
-    //untwistLab.yz *= chromaBoost;
+    half3 untwisted = OklabToLinear(untwistLab);
     
-    // Back to linear sRGB
-    half3 untwisted = Oklab_to_Linear(untwistLab);
+    // Safety clamp to prevent negative colors from Oklab gamut mismatch
+    untwisted = max(untwisted, 0.0h);
 
-    // Blend twisted vs untwisted
+   
+    
+    // 3. Final Blend
     half3 finalColor = lerp(twisted, untwisted, ratio);
-
-    // Apply gamma to sRGB
+    half sdrCorrectionFactor = 1.0h / peakL;
+    finalColor *= sdrCorrectionFactor;
+    
     finalColor = LinearToSrgb(finalColor);
-
-    return saturate(finalColor);
+    
+    return finalColor;
 }
 //GT END
 
@@ -1270,89 +1283,89 @@ half3 ApplyGT_Oklab_SDR(half3 Color)
 // can be optimized
 float2 ScreenPosToUV(float2 ScreenPos, float2 ExtentInverse)
 {
-	float2 UV = (ScreenPos * Color_ScreenPosToViewportScale + Color_ScreenPosToViewportBias) * ExtentInverse;
+    float2 UV = (ScreenPos * Color_ScreenPosToViewportScale + Color_ScreenPosToViewportBias) * ExtentInverse;
 
-	return UV;
+    return UV;
 }
 
 float2 UVToScreenPos(float2 UV, float2 Extent)
 {
-	return (UV * Extent - Color_ScreenPosToViewportBias) / Color_ScreenPosToViewportScale;
+    return (UV * Extent - Color_ScreenPosToViewportBias) / Color_ScreenPosToViewportScale;
 }
 
 float4 ChromaticAberrationParams;
 
 void TonemapCommonVS(
-	in	float4 Position,
-	in	float2 TexCoord,
-	out	float2 OutVignette,
-	out	float4 OutGrainUV,
-	out	float2 OutScreenPos,
-	out	float2 OutFullViewUV
+	in float4 Position,
+	in float2 TexCoord,
+	out float2 OutVignette,
+	out float4 OutGrainUV,
+	out float2 OutScreenPos,
+	out float2 OutFullViewUV
 	)
 {
 	// Forward renderer uses view size texture
 	// TODO: Looks to be Ronin specific.. check this:
-	OutFullViewUV.xy = Position.xy * float2(0.5,-0.5) + 0.5;
+    OutFullViewUV.xy = Position.xy * float2(0.5, -0.5) + 0.5;
 
-	const float AspectRatio = Output_ViewportSize.y * Output_ViewportSizeInverse.x;
+    const float AspectRatio = Output_ViewportSize.y * Output_ViewportSizeInverse.x;
 
-	float2 ColorViewportPos = UVToScreenPos(TexCoord, Color_Extent);
+    float2 ColorViewportPos = UVToScreenPos(TexCoord, Color_Extent);
 
 	// Scale vignette to always be a circle with consistent corner intensity.
-	float2 LensViewportPos = ConvertScreenViewportSpaceToLensViewportSpace(ColorViewportPos);
-	OutVignette = VignetteSpace(LensViewportPos, AspectRatio);
+    float2 LensViewportPos = ConvertScreenViewportSpaceToLensViewportSpace(ColorViewportPos);
+    OutVignette = VignetteSpace(LensViewportPos, AspectRatio);
 
 	// Grain
-	OutGrainUV.xy = TexCoord + Color_ExtentInverse * float2(-0.5,0.5);
-	#if DEBUG_GRAIN_QUANTIZATION
+    OutGrainUV.xy = TexCoord + Color_ExtentInverse * float2(-0.5, 0.5);
+#if DEBUG_GRAIN_QUANTIZATION
 		OutGrainUV.zw = TexCoord;
-	#else
-		OutGrainUV.zw = TexCoord + GrainRandomFull.xy;
-	#endif
+#else
+    OutGrainUV.zw = TexCoord + GrainRandomFull.xy;
+#endif
 
 	// Fringe
-	OutScreenPos = UVToScreenPos(TexCoord, Color_Extent);
+    OutScreenPos = UVToScreenPos(TexCoord, Color_Extent);
 }
 
 // vertex shader entry point
 void MainVS(
-	in 					float4 InPosition 				: ATTRIBUTE0,
-	in 					float2 InTexCoord 				: ATTRIBUTE1,
-	out noperspective 	float2 OutTexCoord 				: TEXCOORD0,
-	out noperspective 	float2 OutVignette				: TEXCOORD1,
-	out noperspective 	float4 OutGrainUV 				: TEXCOORD2,
-	out noperspective 	float2 OutScreenPos 			: TEXCOORD3,
-	out noperspective 	float2 OutFullViewUV 			: TEXCOORD4,
+	in float4 InPosition : ATTRIBUTE0,
+	in float2 InTexCoord : ATTRIBUTE1,
+	out noperspective float2 OutTexCoord : TEXCOORD0,
+	out noperspective float2 OutVignette : TEXCOORD1,
+	out noperspective float4 OutGrainUV : TEXCOORD2,
+	out noperspective float2 OutScreenPos : TEXCOORD3,
+	out noperspective float2 OutFullViewUV : TEXCOORD4,
 	in FStereoVSInput StereoInput,
 	out FStereoVSOutput StereoOutput,
-	out 				float4 OutPosition 				: SV_POSITION
+	out float4 OutPosition : SV_POSITION
 	)
 {
-	StereoSetupVS(StereoInput, StereoOutput);
-	DrawRectangle(InPosition, InTexCoord, OutPosition, OutTexCoord);
+    StereoSetupVS(StereoInput, StereoOutput);
+    DrawRectangle(InPosition, InTexCoord, OutPosition, OutTexCoord);
     TonemapCommonVS(OutPosition, OutTexCoord, OutVignette, OutGrainUV, OutScreenPos, OutFullViewUV);
 }
 
 float max4(float4 x)
 {
-	return max(max(x.r, x.g), max(x.b, x.a));
+    return max(max(x.r, x.g), max(x.b, x.a));
 }
 
 float4 SampleSceneColor(float2 SceneUV, float ArrayIndex)
 {
-	SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
+    SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
 #if MOBILE_MULTI_VIEW
 	return Texture2DArraySample(ColorTexture, ColorSampler, float3(SceneUV.xy,ArrayIndex));
 #else
-	return Texture2DSample(ColorTexture, ColorSampler, SceneUV);
+    return Texture2DSample(ColorTexture, ColorSampler, SceneUV);
 #endif
 }
 
 half3 LookupSceneColor(float2 SceneUV, float ArrayIndex, float2 PixelOffset)
 {
-	float2 SampleUV = SceneUV + PixelOffset * Color_ExtentInverse;
-	return SampleSceneColor(SampleUV, ArrayIndex).xyz;
+    float2 SampleUV = SceneUV + PixelOffset * Color_ExtentInverse;
+    return SampleSceneColor(SampleUV, ArrayIndex).xyz;
 }
 
 
@@ -1367,17 +1380,17 @@ float4 TonemapCommonPS(
 	out float OutLuminance
 	)
 {
-	const float OneOverPreExposure = View.OneOverPreExposure;
-	const float2 EyeAdaptationData = EyeAdaptationBuffer[0].xw;
-	const float GlobalExposure = EyeAdaptationData.x;
+    const float OneOverPreExposure = View.OneOverPreExposure;
+    const float2 EyeAdaptationData = EyeAdaptationBuffer[0].xw;
+    const float GlobalExposure = EyeAdaptationData.x;
 
-	float2 SceneUV = UV.xy;
-	float ArrayIndex = UV.z;
+    float2 SceneUV = UV.xy;
+    float ArrayIndex = UV.z;
 
 	// Sample the scene color.
-	half4 SceneColor;
+    half4 SceneColor;
 	{
-		#if USE_COLOR_FRINGE
+#if USE_COLOR_FRINGE
 			float2 SceneUVJitter = float2(0.0, 0.0);
 		
 				float2 CAScale = ChromaticAberrationParams.rg;
@@ -1400,53 +1413,53 @@ float4 TonemapCommonPS(
 			SceneColor = SceneColorR;
 			SceneColor.g = SceneColorG;
 			SceneColor.b = SceneColorB;
-		#else
-			SceneColor = SampleSceneColor(SceneUV, ArrayIndex);
-		#endif
+#else
+        SceneColor = SampleSceneColor(SceneUV, ArrayIndex);
+#endif
 
-		#if METAL_MSAA_HDR_DECODE && !USE_GAMMA_ONLY
+#if METAL_MSAA_HDR_DECODE && !USE_GAMMA_ONLY
 			// look for PreTonemapMSAA 
 			SceneColor.rgb *= rcp(SceneColor.r * (-0.299) + SceneColor.g * (-0.587) + SceneColor.b * (-0.114) + 1.0);
 			// Try to kill negatives and NaNs here
 			SceneColor.rgb = max(SceneColor.rgb, 0);
-		#endif
-	}
+#endif
+    }
 
 	// Sample bloom & mobile's vignette.
-	#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
-		float MobileVignette;
-	#else
+#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
+    float MobileVignette;
+#else
 		const float MobileVignette = 1.0;
-	#endif
+#endif
 	
-	half3 Bloom;
+    half3 Bloom;
 	{
-		float2 BloomUV;
+        float2 BloomUV;
 		#if ES3_1_PROFILE
 		{
 			BloomUV = FullViewUV.xy;
 		}
 		#else
 		{
-			BloomUV = ApplyScreenTransform(UV.xy, ColorToBloom);
-			BloomUV = clamp(BloomUV, BloomUVViewportBilinearMin, BloomUVViewportBilinearMax);
-		}
-		#endif
+            BloomUV = ApplyScreenTransform(UV.xy, ColorToBloom);
+            BloomUV = clamp(BloomUV, BloomUVViewportBilinearMin, BloomUVViewportBilinearMax);
+        }
+#endif
 
-		float4 RawBloom;
-		#if MOBILE_MULTI_VIEW
+        float4 RawBloom;
+#if MOBILE_MULTI_VIEW
 			RawBloom = Texture2DArraySample(BloomTexture, BloomSampler, float3(BloomUV,ArrayIndex));
-		#else
-			RawBloom = Texture2DSample(BloomTexture, BloomSampler, BloomUV);
+#else
+        RawBloom = Texture2DSample(BloomTexture, BloomSampler, BloomUV);
 		#endif
 
 		#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
 		{
 			// Support sunshaft and vignette for mobile, and we have applied the BloomIntensity and the BloomDirtMask at the sun merge pass.
-			Bloom = RawBloom.rgb;
-			MobileVignette = RawBloom.a;
-		}
-		#else
+            Bloom = RawBloom.rgb;
+            MobileVignette = RawBloom.a;
+        }
+#else
 		{
 			float2 DirtLensUV = ConvertScreenViewportSpaceToLensViewportSpace(ScreenPos) * float2(1.0f, -1.0f);
 
@@ -1454,21 +1467,21 @@ float4 TonemapCommonPS(
 
 			Bloom = RawBloom.rgb * (1.0 + RawBloomDirt * BloomDirtMaskTint.rgb);
 		}
-		#endif
-	}
+#endif
+    }
 	
 	// Compute scene color tint.
-	#if USE_GAMMA_ONLY
+#if USE_GAMMA_ONLY
 		const float3 SceneColorTint = 1.0;
-	#elif SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS
+#elif SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS
 		// Note that SceneColorApplyParamaters[0] is only for FFT bloom energy conservativeness = doesn't need to be in PreExposure
 		const float3 SceneColorTint = ColorScale0.rgb * SceneColorApplyParamaters[0].xyz;
-	#else
-		const float3 SceneColorTint = ColorScale0.rgb;
-	#endif
+#else
+    const float3 SceneColorTint = ColorScale0.rgb;
+#endif
 
 	// Compute the local exposure based of the scene color.
-	#if LOCAL_EXPOSURE_MODE == LOCAL_EXPOSURE_MODE_BILATERAL
+#if LOCAL_EXPOSURE_MODE == LOCAL_EXPOSURE_MODE_BILATERAL
 	float LocalExposure = 1.0;
 	{
 		float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb * OneOverPreExposure);
@@ -1480,7 +1493,7 @@ float4 TonemapCommonPS(
 		float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, LocalExposure_BlurredLuminanceBlend, GlobalExposure, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
 		LocalExposure = CalculateLocalExposure(LogLuminance + log2(GlobalExposure), BaseLogLum, MiddleGreyLumValue, LocalExposure_HighlightContrastScale, LocalExposure_ShadowContrastScale, LocalExposure_DetailStrength);
 	}
-	#elif LOCAL_EXPOSURE_MODE == LOCAL_EXPOSURE_MODE_FUSION
+#elif LOCAL_EXPOSURE_MODE == LOCAL_EXPOSURE_MODE_FUSION
 	float LocalExposure = 1.0;
 	{
 		float2 ExposureFusionUV = ApplyScreenTransform(UV.xy, ColorToExposureFusion);
@@ -1492,12 +1505,12 @@ float4 TonemapCommonPS(
 		
 		LocalExposure = CalculateFusionLocalExposure(LuminanceVal, FusionVal);
 	}
-	#else // LOCAL_EXPOSURE_MODE_NONE
-	const float LocalExposure = 1.0;
-	#endif
+#else // LOCAL_EXPOSURE_MODE_NONE
+    const float LocalExposure = 1.0;
+#endif
 
 	// Apply sharpening onto SceneColor.
-	#if USE_SHARPEN
+#if USE_SHARPEN
 	{
 		// 0..x, 0:no effect .. 1:strong, from r.Tonemapper.Sharpen
 		// Div6 is to save one instruction
@@ -1505,7 +1518,7 @@ float4 TonemapCommonPS(
 
 		half A0 = Luminance(SceneColor.rgb);
 
-	#if HAS_PIXEL_QUAD_MESSAGE_PASSING_SUPPORT
+#if HAS_PIXEL_QUAD_MESSAGE_PASSING_SUPPORT
 		// Use Wave Intrinsics to reduce texture taps
 		FPQMPContext PQMP = PQMPInit(floor(SceneUV* Color_Extent));
 				
@@ -1520,13 +1533,13 @@ float4 TonemapCommonPS(
 		half3 C4 = PQMPReadY(PQMP, SceneColor.rgb);
 		LuminanceNeighbors.z =  PQMPReadX(PQMP,A0);
 		LuminanceNeighbors.w =  PQMPReadY(PQMP,A0);
-	#else
+#else
 		half3 C1 = LookupSceneColor(SceneUV, ArrayIndex, float2(-1,  0));
 		half3 C2 = LookupSceneColor(SceneUV, ArrayIndex, float2( 1,  0));
 		half3 C3 = LookupSceneColor(SceneUV, ArrayIndex, float2( 0, -1));
 		half3 C4 = LookupSceneColor(SceneUV, ArrayIndex, float2( 0,  1));
 		half4 LuminanceNeighbors = half4(Luminance(C1), Luminance(C2), Luminance(C3), Luminance(C4));
-	#endif
+#endif
 
 		// compute mask to not sharpen near very bright HDR content
 		// Note: using max instead of summming up saves 1 instruction
@@ -1544,11 +1557,11 @@ float4 TonemapCommonPS(
 
 		SceneColor.rgb += DeltaColor * LerpFactor;
 	}
-	#endif // USE_SHARPEN
+#endif // USE_SHARPEN
 
 #if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
 	// Mobile device composers expect 1.0 in alpha
-	float4 OutColor = float4(0.0, 0.0, 0.0, 1.0);
+    float4 OutColor = float4(0.0, 0.0, 0.0, 1.0);
 #else
 	float4 OutColor = 0;
 #endif
@@ -1569,19 +1582,20 @@ float4 TonemapCommonPS(
 #else // !USE_GAMMA_ONLY
 	{
 		// Compute vignette.
-		float VignetteMask = MobileVignette;
+        float VignetteMask = MobileVignette;
 		
-		BRANCH
-		if (TonemapperParams.x > 0.0f)
-		{
-			VignetteMask *= ComputeVignetteMask(Vignette, TonemapperParams.x);
-		}
+        BRANCH
+
+        if (TonemapperParams.x > 0.0f)
+        {
+            VignetteMask *= ComputeVignetteMask(Vignette, TonemapperParams.x);
+        }
 		
 		// Compute the final linear color space with explicitly all the terms that should affect the pre exposure.
-		half3 FinalLinearColor = SceneColor.rgb * SceneColorTint * (OneOverPreExposure * GlobalExposure * VignetteMask * LocalExposure);
+        half3 FinalLinearColor = SceneColor.rgb * SceneColorTint * (OneOverPreExposure * GlobalExposure * VignetteMask * LocalExposure);
 		
 		// Apply bloom.
-		FinalLinearColor += Bloom * (OneOverPreExposure * GlobalExposure * VignetteMask);
+        FinalLinearColor += Bloom * (OneOverPreExposure * GlobalExposure * VignetteMask);
 		
 		// Film grain is energy conservative so doesn't need to be taken into PreExposure
 #if USE_FILM_GRAIN
@@ -1611,79 +1625,80 @@ float4 TonemapCommonPS(
 #elif TONEMAPPER_MODE == 4
         half3 OutDeviceColor = ApplyGT3(FinalLinearColor);
 #elif TONEMAPPER_MODE == 5
-        half3 OutDeviceColor = ApplyGT_Oklab_SDR(FinalLinearColor);   
+        half3 OutDeviceColor = ApplyGT_Oklab_SDR(FinalLinearColor);
 #else
         half3 OutDeviceColor = LinearToSrgb(FinalLinearColor);
 #endif
 
-		half LuminanceForPostProcessAA = dot(OutDeviceColor, half3(0.299f, 0.587f, 0.114f));
-		OutLuminance = LuminanceForPostProcessAA;
+        half LuminanceForPostProcessAA = dot(OutDeviceColor, half3(0.299f, 0.587f, 0.114f));
+        OutLuminance = LuminanceForPostProcessAA;
 
 		// RETURN_COLOR not needed unless writing to SceneColor
-		OutColor.rgb = OutDeviceColor;
+        OutColor.rgb = OutDeviceColor;
         OutColor.a = OutLuminance;
 
-		#if USE_LINEAR_FLOAT_RT
+#if USE_LINEAR_FLOAT_RT
 			OutColor.rgb = sRGBToLinear( OutColor.rgb );
-		#endif
+#endif
 
-		BRANCH
-		if(GetOutputDevice() == TONEMAPPER_OUTPUT_LinearEXR)
-		{
-			OutColor.xyz = ST2084ToLinear(OutColor.xyz);
-		}
-		else
-		{
+        BRANCH
+
+        if (GetOutputDevice() == TONEMAPPER_OUTPUT_LinearEXR)
+        {
+            OutColor.xyz = ST2084ToLinear(OutColor.xyz);
+        }
+        else
+        {
             OutColor.xyz = OutDeviceColor;
         }
-	}
+    }
 #endif // !USE_GAMMA_ONLY
 	
 	#if !USE_GAMMA_ONLY
 	{
 		// Compute uniform grain on [0;1]
-		half UniformGrainOP = GrainFromUV(GrainUV.zw); //TODO: verify the quality of GrainFromUV()
+        half UniformGrainOP = GrainFromUV(GrainUV.zw); //TODO: verify the quality of GrainFromUV()
 
 		// Compute uniform grain on [-1;1]
-		half UniformGrainNP = UniformGrainOP * 2.0 - 1.0;
-		half UniformGrainNPSign = clamp(UniformGrainNP * POSITIVE_INFINITY, half(-1.0), half(1.0));
+        half UniformGrainNP = UniformGrainOP * 2.0 - 1.0;
+        half UniformGrainNPSign = clamp(UniformGrainNP * POSITIVE_INFINITY, half(-1.0), half(1.0));
 		
 		// Compute triangular grain on [-1;1]
 		// half TriangularGrainOP = UniformGrainNPSign * (1.0 - sqrt(1.0 - abs(UniformGrainNP)));
-		half TriangularGrainOP = UniformGrainNPSign - UniformGrainNPSign * sqrt(saturate(half(1.0) - abs(UniformGrainNP)));
+        half TriangularGrainOP = UniformGrainNPSign - UniformGrainNPSign * sqrt(saturate(half(1.0) - abs(UniformGrainNP)));
 		
 		// Selects the grain to use.
-		half FinalGrain = 0.0;
-		#if DEBUG_GRAIN_QUANTIZATION
+        half FinalGrain = 0.0;
+#if DEBUG_GRAIN_QUANTIZATION
 			if (ScreenPos.y > 1.0 / 3.0)
 				FinalGrain = TriangularGrainOP;
 			else if (ScreenPos.y < -1.0 / 3.0)
 				FinalGrain = UniformGrainOP - 0.5;
-		#elif 0
+#elif 0
 			FinalGrain = UniformGrainOP - 0.5;
-		#else
-			FinalGrain = TriangularGrainOP;
-		#endif
+#else
+        FinalGrain = TriangularGrainOP;
+#endif
 
 		// Debug grain quantization.
-		#if DEBUG_GRAIN_QUANTIZATION
+#if DEBUG_GRAIN_QUANTIZATION
 		{
 			half Quantization = 10.0;
 			
 			OutColor.rgb = round(OutColor.rgb * Quantization + FinalGrain) * rcp(Quantization);
 			OutColor.rgb = OutColor.ggg;
 		}
-		#else
-			OutColor.rgb += FinalGrain * BackbufferQuantizationDithering;
-		#endif
-	}
-	#endif
+#else
+        OutColor.rgb += FinalGrain * BackbufferQuantizationDithering;
+#endif
+    }
+#endif
 
-	#if DIM_ALPHA_CHANNEL
+#if DIM_ALPHA_CHANNEL
 		OutColor.a = SceneColor.a;
-	#endif
+#endif
 
-	return OutColor;
+    return OutColor;
 }
 
 // pixel shader entry point
@@ -1692,18 +1707,18 @@ void MainPS(
 	in noperspective float2 InVignette : TEXCOORD1,
 	in noperspective float4 GrainUV : TEXCOORD2,
 	in noperspective float2 ScreenPos : TEXCOORD3,
-	in noperspective float2 FullViewUV : TEXCOORD4, 
+	in noperspective float2 FullViewUV : TEXCOORD4,
 	in FStereoPSInput StereoInput,
-	float4 SvPosition : SV_POSITION,		// after all interpolators
+	float4 SvPosition : SV_POSITION, // after all interpolators
 	out float4 OutColor : SV_Target0
 #if OUTPUT_LUMINANCE
 	, out float OutLuminance: SV_Target1
 #endif
 	)
 {
-	float Luminance;
-	float3 UVI = float3(UV.xy, GetEyeIndex(StereoInput));
-	OutColor = TonemapCommonPS(UVI, InVignette, GrainUV, ScreenPos, FullViewUV, SvPosition, Luminance);
+    float Luminance;
+    float3 UVI = float3(UV.xy, GetEyeIndex(StereoInput));
+    OutColor = TonemapCommonPS(UVI, InVignette, GrainUV, ScreenPos, FullViewUV, SvPosition, Luminance);
 #if OUTPUT_LUMINANCE
 	OutLuminance = Luminance;
 #endif
@@ -1744,54 +1759,54 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 #endif
 
 #ifdef SUBPASS_MSAA_SAMPLES
-	#if VULKAN_PROFILE
-		#include "/Engine/Public/Platform/Vulkan/VulkanSubpassSupport.ush"
-	#endif
+#if VULKAN_PROFILE
+#include "/Engine/Public/Platform/Vulkan/VulkanSubpassSupport.ush"
+#endif
 #endif
 
 half4 FetchAndResolveSceneColor(float2 UV, float ArrayIndex)
 {
-	half4 SceneColor = half4(1.0, 1.0, 1.0, 1.0);
+    half4 SceneColor = half4(1.0, 1.0, 1.0, 1.0);
 
 #if VULKAN_PROFILE && SUBPASS_MSAA_SAMPLES > 0	
-	#if SUBPASS_MSAA_SAMPLES == 8
+#if SUBPASS_MSAA_SAMPLES == 8
 		SceneColor = half4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1) + VulkanSubpassFetch0(2) + VulkanSubpassFetch0(3) +
 			VulkanSubpassFetch0(4) + VulkanSubpassFetch0(5) + VulkanSubpassFetch0(6) + VulkanSubpassFetch0(7)) * 0.125;
-	#elif SUBPASS_MSAA_SAMPLES == 4
+#elif SUBPASS_MSAA_SAMPLES == 4
 		SceneColor = half4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1) + VulkanSubpassFetch0(2) + VulkanSubpassFetch0(3)) * 0.25;
-	#elif SUBPASS_MSAA_SAMPLES == 2
+#elif SUBPASS_MSAA_SAMPLES == 2
 		SceneColor = half4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1)) * 0.5;
-	#elif SUBPASS_MSAA_SAMPLES == 1
+#elif SUBPASS_MSAA_SAMPLES == 1
 		SceneColor = half4(VulkanSubpassFetch0());
-	#endif
-#else
-	#if MOBILE_MULTI_VIEW
-		SceneColor = Texture2DArraySample(ColorTexture, ColorSampler, float3(UV.xy,ArrayIndex));
-	#else
-		SceneColor = Texture2DSample(ColorTexture, ColorSampler, UV);
-	#endif
 #endif
-	return SceneColor;
+#else
+#if MOBILE_MULTI_VIEW
+		SceneColor = Texture2DArraySample(ColorTexture, ColorSampler, float3(UV.xy,ArrayIndex));
+#else
+    SceneColor = Texture2DSample(ColorTexture, ColorSampler, UV);
+#endif
+#endif
+    return SceneColor;
 }
 
 void MobileCustomResolve_MainPS(
-	in float4 SvPosition							: SV_POSITION, 
-	in noperspective float2 UV						: TEXCOORD0,
-	out				 float4 OutColor				: SV_Target0,
+	in float4 SvPosition : SV_POSITION,
+	in noperspective float2 UV : TEXCOORD0,
+	out float4 OutColor : SV_Target0,
 	in FStereoPSInput StereoInput
 )
 {
-	StereoSetupPS(StereoInput);
+    StereoSetupPS(StereoInput);
 	
-	const float OneOverPreExposure = ResolvedView.OneOverPreExposure;
+    const float OneOverPreExposure = ResolvedView.OneOverPreExposure;
 
-	half4 SceneColor = FetchAndResolveSceneColor(UV, GetEyeIndex(StereoInput));
-	SceneColor.a = 1.0;
+    half4 SceneColor = FetchAndResolveSceneColor(UV, GetEyeIndex(StereoInput));
+    SceneColor.a = 1.0;
 
-	half3 LinearColor = SceneColor.rgb * OneOverPreExposure;
-	LinearColor *= ColorScale0.rgb; // SceneColorTint
-	half3 DeviceColor = ColorLookupTable(LinearColor);
+    half3 LinearColor = SceneColor.rgb * OneOverPreExposure;
+    LinearColor *= ColorScale0.rgb; // SceneColorTint
+    half3 DeviceColor = ColorLookupTable(LinearColor);
 
-	OutColor.rgb = DeviceColor;
-	OutColor.a = 1.0;
+    OutColor.rgb = DeviceColor;
+    OutColor.a = 1.0;
 }
